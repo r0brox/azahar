@@ -22,6 +22,7 @@
 #include "core/hle/service/apt/apt_a.h"
 #include "core/hle/service/apt/apt_s.h"
 #include "core/hle/service/apt/apt_u.h"
+#include "core/hle/service/apt/custom_font.h"
 #include "core/hle/service/apt/bcfnt/bcfnt.h"
 #include "core/hle/service/apt/ns.h"
 #include "core/hle/service/apt/ns_c.h"
@@ -211,50 +212,20 @@ static u32 DecompressLZ11(const u8* in, u8* out) {
 bool Module::LoadSharedFont() {
     auto cfg = Service::CFG::GetModule(system);
     u8 font_region_code;
+
     switch (cfg->GetRegionValue(false)) {
-    case 4: // CHN
+    case 4:
         font_region_code = 2;
         break;
-    case 5: // KOR
+    case 5:
         font_region_code = 3;
         break;
-    case 6: // TWN
+    case 6:
         font_region_code = 4;
         break;
-    default: // JPN/EUR/USA
+    default:
         font_region_code = 1;
         break;
-    }
-
-    const u64_le shared_font_archive_id_low = 0x0004009b00014002 | ((font_region_code - 1) << 8);
-
-    FileSys::NCCHArchive archive(shared_font_archive_id_low, Service::FS::MediaType::NAND);
-    // 20-byte all zero path for opening RomFS
-    const FileSys::Path file_path(std::vector<u8>(20, 0));
-    FileSys::Mode open_mode = {};
-    open_mode.read_flag.Assign(1);
-    auto file_result = archive.OpenFile(file_path, open_mode, 0);
-    if (file_result.Failed())
-        return false;
-
-    auto romfs = std::move(file_result).Unwrap();
-    std::vector<u8> romfs_buffer(romfs->GetSize());
-    romfs->Read(0, romfs_buffer.size(), romfs_buffer.data());
-    romfs->Close();
-
-    const char16_t* file_name[4] = {u"cbf_std.bcfnt.lz", u"cbf_zh-Hans-CN.bcfnt.lz",
-                                    u"cbf_ko-Hang-KR.bcfnt.lz", u"cbf_zh-Hant-TW.bcfnt.lz"};
-    RomFS::RomFSFile font_file =
-        RomFS::GetFile(romfs_buffer.data(), {file_name[font_region_code - 1]});
-    if (font_file.Data() == nullptr) {
-        if (font_region_code != 1) {
-            font_file = RomFS::GetFile(romfs_buffer.data(), {file_name[0]});
-            if (font_file.Data() == nullptr) {
-                return false;
-            }
-        } else {
-            return false;
-        }
     }
 
     struct {
@@ -263,18 +234,21 @@ bool Module::LoadSharedFont() {
         u32_le decompressed_size;
         INSERT_PADDING_WORDS(0x1D);
     } shared_font_header{};
-    static_assert(sizeof(shared_font_header) == 0x80, "shared_font_header has incorrect size");
 
-    shared_font_header.status = 2; // successfully loaded
+    static_assert(sizeof(shared_font_header) == 0x80);
+
+    shared_font_header.status = 2;
     shared_font_header.region = font_region_code;
     shared_font_header.decompressed_size =
-        DecompressLZ11(font_file.Data(), shared_font_mem->GetPointer(0x80));
-    std::memcpy(shared_font_mem->GetPointer(), &shared_font_header, sizeof(shared_font_header));
-    *shared_font_mem->GetPointer(0x83) = 'U'; // Change the magic from "CFNT" to "CFNU"
+        DecompressLZ11(CUSTOM_FONT.data(), shared_font_mem->GetPointer(0x80));
+
+    std::memcpy(shared_font_mem->GetPointer(), &shared_font_header,
+                sizeof(shared_font_header));
+
+    *shared_font_mem->GetPointer(0x83) = 'U';
 
     return true;
 }
-
 bool Module::LoadLegacySharedFont() {
     // This is the legacy method to load shared font.
     // The expected format is a decrypted, uncompressed BCFNT file with the 0x80 byte header
